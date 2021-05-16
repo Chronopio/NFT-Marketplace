@@ -2,6 +2,7 @@ node_modules/
 build/
 artifacts/
 cache/
+.openzeppelin/
 package-lock.json
 .env
 yarn.lock
