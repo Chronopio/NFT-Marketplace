@@ -13,6 +13,14 @@ contract Marketplace is Initializable, OwnableUpgradeable {
     AggregatorV3Interface internal daiPriceFeed;
     AggregatorV3Interface internal ethPriceFeed;
     AggregatorV3Interface internal linkPriceFeed;
+    struct sellOffer {
+        address seller;
+        address tokenAddress;
+        uint256 amountOfTokens;
+        uint256 deadline;
+        uint256 packPrice;
+    }
+    mapping(uint256 => sellOffer) sellOffers;
 
     function initialize() public initializer {
         OwnableUpgradeable.__Ownable_init();
@@ -60,5 +68,37 @@ contract Marketplace is Initializable, OwnableUpgradeable {
             uint80 answeredInRound
         ) = linkPriceFeed.latestRoundData();
         return price;
+    }
+
+    function createSellOffer(
+        address _seller,
+        address _tokenAddress,
+        uint256 _tokenID,
+        uint256 _tokenAmount,
+        uint256 _deadlineInHours,
+        uint256 _price
+    ) external {
+        require(
+            sellOffers[_tokenID].seller == address(0),
+            "A sell offer with this ID already exists"
+        );
+        sellOffer storage newOffer = sellOffers[_tokenID];
+        newOffer.seller = _seller;
+        newOffer.tokenAddress = _tokenAddress;
+        newOffer.amountOfTokens = _tokenAmount;
+        newOffer.deadline = block.timestamp + _deadlineInHours * 1 hours;
+        newOffer.packPrice = _price;
+    }
+
+    function deleteSellOffer(uint256 _tokenID) external {
+        require(
+            sellOffers[_tokenID].seller == msg.sender,
+            "Only the sell offer creator can delete it"
+        );
+        delete sellOffers[_tokenID];
+    }
+
+    function checkSeller(uint256 _tokenID) external view returns (address) {
+        return sellOffers[_tokenID].seller;
     }
 }
