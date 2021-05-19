@@ -1,6 +1,9 @@
 //SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+/// @title A NFT Marketplace
+/// @author Joaquin Yañez
+/// @notice You can sell of buy ERC1155 tokens safely and with low fees
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
@@ -8,6 +11,10 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 contract Marketplace is Initializable, OwnableUpgradeable {
+    address private constant daiContractAddress =
+        0x6B175474E89094C44Da98b954EedeAC495271d0F;
+    address private constant linkContractAddress =
+        0x514910771AF9Ca656af840dff83E8264EcF986CA;
     address private feeRecipient;
     uint256 private feeAmount;
     AggregatorV3Interface internal daiPriceFeed;
@@ -21,6 +28,21 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         uint256 packPrice;
     }
     mapping(uint256 => sellOffer) sellOffers;
+    event Sell(
+        address indexed _from,
+        uint256 indexed _tokenID,
+        uint256 indexed _price,
+        uint256 _deadline,
+        uint256 _amount
+    );
+    event Cancel(uint256 indexed _tokenID, uint256 indexed _when);
+    event Buy(
+        address indexed _from,
+        uint256 indexed _tokenID,
+        uint256 indexed _paymentTokenIndex,
+        string _paymentToken
+    );
+    event Expired(string _message);
 
     function initialize() public initializer {
         OwnableUpgradeable.__Ownable_init();
@@ -37,41 +59,30 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         );
     }
 
+    function setFeeRecipient(address _feeRecipient) external onlyOwner {
+        feeRecipient = _feeRecipient;
+    }
+
+    function setFeeAmount(uint256 _feeAmount) external onlyOwner {
+        feeAmount = _feeAmount;
+    }
+
     function getDaiPrice() public view returns (int256) {
-        (
-            uint80 roundID,
-            int256 price,
-            uint256 startedAt,
-            uint256 timeStamp,
-            uint80 answeredInRound
-        ) = daiPriceFeed.latestRoundData();
+        (, int256 price, , , ) = daiPriceFeed.latestRoundData();
         return price;
     }
 
     function getEthPrice() public view returns (int256) {
-        (
-            uint80 roundID,
-            int256 price,
-            uint256 startedAt,
-            uint256 timeStamp,
-            uint80 answeredInRound
-        ) = ethPriceFeed.latestRoundData();
+        (, int256 price, , , ) = ethPriceFeed.latestRoundData();
         return price;
     }
 
     function getLinkPrice() public view returns (int256) {
-        (
-            uint80 roundID,
-            int256 price,
-            uint256 startedAt,
-            uint256 timeStamp,
-            uint80 answeredInRound
-        ) = linkPriceFeed.latestRoundData();
+        (, int256 price, , , ) = linkPriceFeed.latestRoundData();
         return price;
     }
 
     function createSellOffer(
-        address _seller,
         address _tokenAddress,
         uint256 _tokenID,
         uint256 _tokenAmount,
@@ -82,12 +93,15 @@ contract Marketplace is Initializable, OwnableUpgradeable {
             sellOffers[_tokenID].seller == address(0),
             "A sell offer with this ID already exists"
         );
+        require(IERC1155(_tokenAddress).balanceOf(msg.sender, _tokenID) > 0);
         sellOffer storage newOffer = sellOffers[_tokenID];
-        newOffer.seller = _seller;
+        newOffer.seller = msg.sender;
         newOffer.tokenAddress = _tokenAddress;
         newOffer.amountOfTokens = _tokenAmount;
-        newOffer.deadline = block.timestamp + _deadlineInHours * 1 hours;
+        newOffer.deadline = block.timestamp + (_deadlineInHours * 1 hours);
         newOffer.packPrice = _price;
+
+        emit Sell(msg.sender, _tokenID, _price, _deadlineInHours, _tokenAmount);
     }
 
     function deleteSellOffer(uint256 _tokenID) external {
@@ -96,9 +110,139 @@ contract Marketplace is Initializable, OwnableUpgradeable {
             "Only the sell offer creator can delete it"
         );
         delete sellOffers[_tokenID];
+
+        emit Cancel(_tokenID, block.timestamp);
     }
 
     function checkSeller(uint256 _tokenID) external view returns (address) {
         return sellOffers[_tokenID].seller;
+    }
+
+    function getOfferPrice(uint256 _tokenID, uint256 _paymentToken)
+        external
+        view
+        returns (uint256 price)
+    {
+        require(
+            _paymentToken >= 0 && _paymentToken <= 2,
+            "You can only choose between ETH, DAI and LINK"
+        );
+
+        if (_paymentToken == 0) {
+            uint256 ethPrice = uint256(getEthPrice());
+            price = (sellOffers[_tokenID].packPrice * 1000) / ethPrice;
+        } else if (_paymentToken == 1) {
+            uint256 daiPrice = uint256(getDaiPrice());
+            price = (sellOffers[_tokenID].packPrice * 1000) / daiPrice;
+        } else {
+            uint256 linkPrice = uint256(getLinkPrice());
+            price = (sellOffers[_tokenID].packPrice * 1000) / linkPrice;
+        }
+    }
+
+    function buyOffer(uint256 _tokenID, uint256 _paymentToken)
+        external
+        payable
+    {
+        require(
+            _paymentToken >= 0 && _paymentToken <= 2,
+            "You can only choose between ETH, DAI and LINK"
+        );
+        if (block.timestamp > sellOffers[_tokenID].deadline) {
+            delete sellOffers[_tokenID];
+            emit Cancel(_tokenID, sellOffers[_tokenID].deadline);
+            emit Expired("The offer has expired, please try with another one");
+        } else {
+            uint256 price = this.getOfferPrice(_tokenID, _paymentToken);
+            if (_paymentToken == 0) {
+                require(
+                    msg.value >= price * 1e15,
+                    "You are sending less money than needed"
+                );
+                if (msg.value > price * 1e15) {
+                    payable(msg.sender).transfer(msg.value - (price * 1e15));
+                }
+
+                uint256 amountToFeeRecipient =
+                    address(this).balance / feeAmount;
+                payable(feeRecipient).transfer(amountToFeeRecipient);
+                payable(sellOffers[_tokenID].seller).transfer(
+                    address(this).balance
+                );
+
+                emit Buy(msg.sender, _tokenID, 0, "ETH");
+            } else if (_paymentToken == 1) {
+                require(
+                    IERC20(daiContractAddress).balanceOf(msg.sender) >=
+                        price / 1000,
+                    "Not enough balance to pay the token"
+                );
+                require(
+                    IERC20(daiContractAddress).allowance(
+                        msg.sender,
+                        address(this)
+                    ) >= price / 1000,
+                    "You must approve the contract to send the tokens"
+                );
+                uint256 feeToSend = (price / 1000) / feeAmount;
+                uint256 amountToSend = (price / 1000) - feeToSend;
+
+                IERC20(daiContractAddress).transferFrom(
+                    msg.sender,
+                    feeRecipient,
+                    feeToSend
+                );
+
+                IERC20(daiContractAddress).transferFrom(
+                    msg.sender,
+                    sellOffers[_tokenID].seller,
+                    amountToSend
+                );
+
+                emit Buy(msg.sender, _tokenID, 1, "DAI");
+            } else {
+                require(
+                    IERC20(linkContractAddress).balanceOf(msg.sender) >=
+                        price / 1000,
+                    "Not enough balance to pay the token"
+                );
+                require(
+                    IERC20(linkContractAddress).allowance(
+                        msg.sender,
+                        address(this)
+                    ) >= price / 1000,
+                    "You must approve the contract to send the tokens"
+                );
+                uint256 feeToSend = (price / 1000) / feeAmount;
+                uint256 amountToSend = (price / 1000) - feeToSend;
+
+                if (feeToSend == 0) {
+                    feeToSend = 1;
+                }
+
+                IERC20(linkContractAddress).transferFrom(
+                    msg.sender,
+                    feeRecipient,
+                    feeToSend
+                );
+
+                IERC20(linkContractAddress).transferFrom(
+                    msg.sender,
+                    sellOffers[_tokenID].seller,
+                    amountToSend
+                );
+
+                emit Buy(msg.sender, _tokenID, 2, "LINK");
+            }
+
+            IERC1155(sellOffers[_tokenID].tokenAddress).safeTransferFrom(
+                sellOffers[_tokenID].seller,
+                msg.sender,
+                65678,
+                sellOffers[_tokenID].amountOfTokens,
+                ""
+            );
+            delete sellOffers[_tokenID];
+        }
     }
 }

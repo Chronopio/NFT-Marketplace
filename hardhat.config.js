@@ -10,6 +10,8 @@ require('@openzeppelin/hardhat-upgrades');
 require('hardhat-deploy');
 require('@nomiclabs/hardhat-ethers');
 require('hardhat-tracer');
+require('hardhat-log-remover');
+require('@nomiclabs/hardhat-web3');
 
 module.exports = {
     networks: {
