@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 /// @title A NFT Marketplace
 /// @author Joaquin Yañez
 /// @notice You can sell of buy ERC1155 tokens safely and with low fees
+
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
@@ -28,6 +29,13 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         uint256 packPrice;
     }
     mapping(uint256 => sellOffer) sellOffers;
+
+    /// @notice Event to be emitted on sell
+    /// @param _from The seller address
+    /// @param _tokenID The ID of the token that has been sold
+    /// @param _price Price for whole set of tokens
+    /// @param _deadline The deadline to accept and buy the offer
+    /// @param _amount Amount of tokens in the pack
     event Sell(
         address indexed _from,
         uint256 indexed _tokenID,
@@ -35,15 +43,25 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         uint256 _deadline,
         uint256 _amount
     );
+    /// @notice Event to be emitted on offer cancel
+    /// @param _tokenID The ID of the token that has been sold
+    /// @param _when Timestamp when the offer was cancelled
     event Cancel(uint256 indexed _tokenID, uint256 indexed _when);
+    /// @notice Event to be emitted on buy
+    /// @param _from The buyer address
+    /// @param _tokenID The ID of the token that has been sold
+    /// @param _paymentTokenIndex Index of the token used in the payment, 0 for ETH, 1 for DAI, 2 for LINK
+    /// @param _paymentToken Name of the token used in the payment
     event Buy(
         address indexed _from,
         uint256 indexed _tokenID,
         uint256 indexed _paymentTokenIndex,
         string _paymentToken
     );
+    /// @param _message Standard message to advice that the offer has been cancelled
     event Expired(string _message);
 
+    /// @dev Function to replace the constructor, to make the contract upgradeable
     function initialize() public initializer {
         OwnableUpgradeable.__Ownable_init();
         feeRecipient = 0xD215De1fc9E2514Cf274df3F2378597C7Be06Aca;
@@ -59,29 +77,48 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         );
     }
 
+    /// @notice This function can not be called by someone different than the owner
+    /// @param _feeRecipient The new fee recipient address
     function setFeeRecipient(address _feeRecipient) external onlyOwner {
         feeRecipient = _feeRecipient;
     }
 
+    /// @notice This function can not be called by someone different than the owner
+    /// @param _feeAmount The new fee amount (in basis points)
     function setFeeAmount(uint256 _feeAmount) external onlyOwner {
         feeAmount = _feeAmount;
     }
 
+    /// @notice Function that returns the DAI price
+    /// @dev This function is intended to be internal but it is public for testing purposes
+    /// @return The amount of USD you get for each DAI, with 8 decimals
     function getDaiPrice() public view returns (int256) {
         (, int256 price, , , ) = daiPriceFeed.latestRoundData();
         return price;
     }
 
+    /// @notice Function that returns the ETH price
+    /// @dev This function is intended to be internal but it is public for testing purposes
+    /// @return The amount of USD you get for each ETH, with 8 decimals
     function getEthPrice() public view returns (int256) {
         (, int256 price, , , ) = ethPriceFeed.latestRoundData();
         return price;
     }
 
+    /// @notice Function that returns the LINK price
+    /// @dev This function is intended to be internal but it is public for testing purposes
+    /// @return The amount of USD you get for each LINK, with 8 decimals
     function getLinkPrice() public view returns (int256) {
         (, int256 price, , , ) = linkPriceFeed.latestRoundData();
         return price;
     }
 
+    /// @notice Creates a sell offer
+    /// @param _tokenAddress The address of the token that is going to be sold
+    /// @param _tokenID ID of the token that is going to be sold
+    /// @param _tokenAmount The amount of token in the pack
+    /// @param _deadlineInHours Deadline in hours
+    /// @param _price Price for the whole set
     function createSellOffer(
         address _tokenAddress,
         uint256 _tokenID,
@@ -104,6 +141,8 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         emit Sell(msg.sender, _tokenID, _price, _deadlineInHours, _tokenAmount);
     }
 
+    /// @notice Deletes a sell offer, only can be called by the offer creator
+    /// @param _tokenID ID of the token being sold
     function deleteSellOffer(uint256 _tokenID) external {
         require(
             sellOffers[_tokenID].seller == msg.sender,
@@ -114,10 +153,19 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         emit Cancel(_tokenID, block.timestamp);
     }
 
+    /// @notice Check the seller of a specific offer
+    /// @dev This function is mainly intended for testing purposes
+    /// @param _tokenID ID of the token being sold
+    /// @return The seller of the respective token ID
     function checkSeller(uint256 _tokenID) external view returns (address) {
         return sellOffers[_tokenID].seller;
     }
 
+    /// @notice Returns the price of the set in a specific token
+    /// @dev The pack price is multiplied by 1000, to handle the lack of floating point support in solidity
+    /// @param _tokenID a parameter just like in doxygen (must be followed by parameter name)
+    /// @param _paymentToken a parameter just like in doxygen (must be followed by parameter name)
+    /// @return price of the set in a specific token
     function getOfferPrice(uint256 _tokenID, uint256 _paymentToken)
         external
         view
@@ -140,6 +188,9 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         }
     }
 
+    /// @notice Accepts an offer, the user is able to pay with ETH, DAI, LINK. If the user pays with ETH the function takes the exact amount and returns the rest
+    /// @param _tokenID The ID of the token tha is being buyed
+    /// @param _paymentToken Index of the token used in the payment, 0 for ETH, 1 for DAI, 2 for LINK
     function buyOffer(uint256 _tokenID, uint256 _paymentToken)
         external
         payable
@@ -155,6 +206,7 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         } else {
             uint256 price = this.getOfferPrice(_tokenID, _paymentToken);
             if (_paymentToken == 0) {
+                // The price is multiplied by 1e15 to convert the value to wei. Remember it was previously multiplied by 1e3
                 require(
                     msg.value >= price * 1e15,
                     "You are sending less money than needed"
@@ -172,6 +224,7 @@ contract Marketplace is Initializable, OwnableUpgradeable {
 
                 emit Buy(msg.sender, _tokenID, 0, "ETH");
             } else if (_paymentToken == 1) {
+                // The price must be divided by 1000 on each use case to get the correct amount, because the price was previously multiplied by 1000
                 require(
                     IERC20(daiContractAddress).balanceOf(msg.sender) >=
                         price / 1000,
@@ -201,6 +254,7 @@ contract Marketplace is Initializable, OwnableUpgradeable {
 
                 emit Buy(msg.sender, _tokenID, 1, "DAI");
             } else {
+                // The price must be divided by 1000 on each use case to get the correct amount, because the price was previously multiplied by 1000
                 require(
                     IERC20(linkContractAddress).balanceOf(msg.sender) >=
                         price / 1000,

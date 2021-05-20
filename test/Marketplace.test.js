@@ -14,6 +14,7 @@ describe('NFT Marketplace Contract', () => {
         tokenOwner,
         daiOwner,
         daiContract,
+        ethUsdPrice,
         testTokenContract;
 
     before(async () => {
@@ -80,11 +81,6 @@ describe('NFT Marketplace Contract', () => {
         linkContract
             .balanceOf('0xdad22a85ef8310ef582b70e4051e543f3153e11f')
             .then((balance) => console.log('Link balance', balance.toString()));
-
-        const linkOwnerEthBalance = await ethers.provider.getBalance(
-            '0xdad22a85ef8310ef582b70e4051e543f3153e11f'
-        );
-        console.log(linkOwnerEthBalance.toString());
     });
 
     it('should revert is user tries to change fee recipient', async () => {
@@ -129,7 +125,7 @@ describe('NFT Marketplace Contract', () => {
             .setApprovalForAll(marketplace.address, true);
 
         const sellerAddress = await marketplace.checkSeller(65678);
-        console.log(sellerAddress);
+        console.log('Seller address: ', sellerAddress);
         expect(sellerAddress).to.be.equal(tokenOwner._address);
     });
 
@@ -139,7 +135,10 @@ describe('NFT Marketplace Contract', () => {
             marketplace.address
         );
 
-        console.log(isApproved);
+        console.log(
+            'The contract is approved to transfer tokens: ',
+            isApproved
+        );
         expect(isApproved).to.be.true;
     });
 
@@ -164,10 +163,9 @@ describe('NFT Marketplace Contract', () => {
     });
 
     it('should return correct offer price', async () => {
-        const daiPriceFromContract = await marketplace.getOfferPrice(65678, 2);
-        console.log(
-            `Price multiplied by 1000 is ${daiPriceFromContract.toString()}`
-        );
+        ethUsdPrice = await marketplace.getOfferPrice(65678, 0);
+        console.log(`The price is ${ethUsdPrice.toString()} finney`);
+        expect(ethUsdPrice.gt(0)).to.be.true;
     });
 
     it('should be able to buy a set of tokens with ETH, and sent additional money to the user', async () => {
@@ -179,9 +177,12 @@ describe('NFT Marketplace Contract', () => {
             owner.address,
             65678
         );
+        const initialBuyerEthBalance = await ethers.provider.getBalance(
+            owner.address
+        );
 
         await marketplace.buyOffer(65678, 0, {
-            value: ethers.utils.parseEther('1')
+            value: ethers.utils.parseEther('10')
         });
 
         const finalSellerBalance = await testTokenContract.balanceOf(
@@ -192,6 +193,9 @@ describe('NFT Marketplace Contract', () => {
             owner.address,
             65678
         );
+        const finalBuyerEthBalance = await ethers.provider.getBalance(
+            owner.address
+        );
 
         console.log(`Initial buyer balance: ${initialBuyerBalance}`);
         console.log(`Initial seller balance: ${initialSellerBalance}`);
@@ -200,6 +204,11 @@ describe('NFT Marketplace Contract', () => {
 
         expect(finalSellerBalance).to.be.equal(initialSellerBalance - 10);
         expect(finalBuyerBalance).to.be.equal(initialBuyerBalance + 10);
+        expect(
+            finalBuyerEthBalance.gt(
+                initialBuyerEthBalance.sub(ethers.utils.parseEther('10'))
+            )
+        ).to.be.true;
     });
 
     it('should be able to buy tokens with DAI', async () => {
