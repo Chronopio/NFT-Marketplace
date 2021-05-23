@@ -1,7 +1,7 @@
 {
   "name": "nft-marketplace",
-  "version": "1.0.0",
-  "description": "",
+  "version": "2.0.0",
+  "description": "NFT Marketplace for Solidity Course",
   "main": "index.js",
   "scripts": {
     "test": "hardhat test --logs",
