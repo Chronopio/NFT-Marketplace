@@ -9,9 +9,10 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
-contract Marketplace is Initializable, OwnableUpgradeable {
+contract MarketplaceV2 is Initializable, OwnableUpgradeable {
     address private constant daiContractAddress =
         0x6B175474E89094C44Da98b954EedeAC495271d0F;
     address private constant linkContractAddress =
@@ -27,6 +28,7 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         uint256 amountOfTokens;
         uint256 deadline;
         uint256 packPrice;
+        bool isERC1155;
     }
     mapping(uint256 => sellOffer) sellOffers;
 
@@ -41,7 +43,8 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         uint256 indexed _tokenID,
         uint256 indexed _price,
         uint256 _deadline,
-        uint256 _amount
+        uint256 _amount,
+        bool isERC1155
     );
     /// @notice Event to be emitted on offer cancel
     /// @param _tokenID The ID of the token that has been sold
@@ -56,7 +59,8 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         address indexed _from,
         uint256 indexed _tokenID,
         uint256 indexed _paymentTokenIndex,
-        string _paymentToken
+        string _paymentToken,
+        bool isERC1155
     );
     /// @param _message Standard message to advice that the offer has been cancelled
     event Expired(string _message);
@@ -113,7 +117,7 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         return price;
     }
 
-    /// @notice Creates a sell offer
+    /// @notice Creates a sell offer, the user can sell ERC1155 or ERC721
     /// @param _tokenAddress The address of the token that is going to be sold
     /// @param _tokenID ID of the token that is going to be sold
     /// @param _tokenAmount The amount of token in the pack
@@ -124,24 +128,41 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         uint256 _tokenID,
         uint256 _tokenAmount,
         uint256 _deadlineInHours,
-        uint256 _price
+        uint256 _price,
+        bool _isERC1155
     ) external {
         require(
             sellOffers[_tokenID].seller == address(0),
             "A sell offer with this ID already exists"
         );
-        require(
-            IERC1155(_tokenAddress).balanceOf(msg.sender, _tokenID) > 0,
-            "You must have tokens to sell"
-        );
+        if (_isERC1155) {
+            require(
+                IERC1155(_tokenAddress).balanceOf(msg.sender, _tokenID) > 0,
+                "You must have tokens to sell"
+            );
+        } else {
+            require(_tokenAmount == 1, "ERC721 tokens are unique");
+            require(
+                IERC721(_tokenAddress).ownerOf(_tokenID) == msg.sender,
+                "You are not the owner of the token"
+            );
+        }
         sellOffer storage newOffer = sellOffers[_tokenID];
         newOffer.seller = msg.sender;
         newOffer.tokenAddress = _tokenAddress;
         newOffer.amountOfTokens = _tokenAmount;
         newOffer.deadline = block.timestamp + (_deadlineInHours * 1 hours);
         newOffer.packPrice = _price;
+        newOffer.isERC1155 = _isERC1155;
 
-        emit Sell(msg.sender, _tokenID, _price, _deadlineInHours, _tokenAmount);
+        emit Sell(
+            msg.sender,
+            _tokenID,
+            _price,
+            _deadlineInHours,
+            _tokenAmount,
+            _isERC1155
+        );
     }
 
     /// @notice Deletes a sell offer, only can be called by the offer creator
@@ -191,13 +212,14 @@ contract Marketplace is Initializable, OwnableUpgradeable {
         }
     }
 
-    /// @notice Accepts an offer, the user is able to pay with ETH, DAI, LINK. If the user pays with ETH the function takes the exact amount and returns the rest
+    /// @notice Accepts an offer of ERC1155 or ERC721, the user is able to pay with ETH, DAI, LINK. If the user pays with ETH the function takes the exact amount and returns the rest
     /// @param _tokenID The ID of the token tha is being buyed
     /// @param _paymentToken Index of the token used in the payment, 0 for ETH, 1 for DAI, 2 for LINK
-    function buyOffer(uint256 _tokenID, uint256 _paymentToken)
-        external
-        payable
-    {
+    function buyOffer(
+        uint256 _tokenID,
+        uint256 _paymentToken,
+        bool isERC1155
+    ) external payable {
         require(
             _paymentToken >= 0 && _paymentToken <= 2,
             "You can only choose between ETH, DAI and LINK"
@@ -225,7 +247,7 @@ contract Marketplace is Initializable, OwnableUpgradeable {
                     address(this).balance
                 );
 
-                emit Buy(msg.sender, _tokenID, 0, "ETH");
+                emit Buy(msg.sender, _tokenID, 0, "ETH", isERC1155);
             } else if (_paymentToken == 1) {
                 // The price must be divided by 1000 on each use case to get the correct amount, because the price was previously multiplied by 1000
                 require(
@@ -255,7 +277,7 @@ contract Marketplace is Initializable, OwnableUpgradeable {
                     amountToSend
                 );
 
-                emit Buy(msg.sender, _tokenID, 1, "DAI");
+                emit Buy(msg.sender, _tokenID, 1, "DAI", isERC1155);
             } else {
                 // The price must be divided by 1000 on each use case to get the correct amount, because the price was previously multiplied by 1000
                 require(
@@ -289,16 +311,25 @@ contract Marketplace is Initializable, OwnableUpgradeable {
                     amountToSend
                 );
 
-                emit Buy(msg.sender, _tokenID, 2, "LINK");
+                emit Buy(msg.sender, _tokenID, 2, "LINK", isERC1155);
+            }
+            if (isERC1155) {
+                IERC1155(sellOffers[_tokenID].tokenAddress).safeTransferFrom(
+                    sellOffers[_tokenID].seller,
+                    msg.sender,
+                    _tokenID,
+                    sellOffers[_tokenID].amountOfTokens,
+                    ""
+                );
+            } else {
+                IERC721(sellOffers[_tokenID].tokenAddress).safeTransferFrom(
+                    sellOffers[_tokenID].seller,
+                    msg.sender,
+                    _tokenID,
+                    ""
+                );
             }
 
-            IERC1155(sellOffers[_tokenID].tokenAddress).safeTransferFrom(
-                sellOffers[_tokenID].seller,
-                msg.sender,
-                _tokenID,
-                sellOffers[_tokenID].amountOfTokens,
-                ""
-            );
             delete sellOffers[_tokenID];
         }
     }

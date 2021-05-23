@@ -15,7 +15,8 @@ describe('NFT Marketplace Contract', () => {
         daiOwner,
         daiContract,
         ethUsdPrice,
-        testTokenContract;
+        testTokenContract,
+        marketplacev2;
 
     before(async () => {
         [owner, addr1, addr2, ...addrs] = await ethers.getSigners();
@@ -32,6 +33,7 @@ describe('NFT Marketplace Contract', () => {
 
         const IERC1155 = await hre.artifacts.readArtifact('IERC1155');
         const IERC20 = await hre.artifacts.readArtifact('IERC20');
+        const IERC721 = await hre.artifacts.readArtifact('IERC721');
 
         testTokenContract = new ethers.Contract(
             '0xd07dc4262bcdbf85190c01c996b4c06a461d2430',
@@ -43,6 +45,11 @@ describe('NFT Marketplace Contract', () => {
             IERC20.abi,
             owner
         );
+        sorareContract = new ethers.Contract(
+            '0x629a673a8242c2ac4b7b8c5d8735fbeac21a6205',
+            IERC721.abi,
+            owner
+        );
 
         await hre.network.provider.request({
             method: 'hardhat_impersonateAccount',
@@ -50,6 +57,14 @@ describe('NFT Marketplace Contract', () => {
         });
         tokenOwner = await ethers.provider.getSigner(
             '0x5a098be98f6715782ee73dc9c5b9574bd4c130c9'
+        );
+
+        await hre.network.provider.request({
+            method: 'hardhat_impersonateAccount',
+            params: ['0x327305a797d92a39cee1a225d7e2a1cc42b1a8fa']
+        });
+        sorareOwner = await ethers.provider.getSigner(
+            '0x327305a797d92a39cee1a225d7e2a1cc42b1a8fa'
         );
 
         await hre.network.provider.request({
@@ -350,5 +365,89 @@ describe('NFT Marketplace Contract', () => {
         expect(sellerAddress).to.be.equal(
             '0x0000000000000000000000000000000000000000'
         );
+    });
+
+    it('should be able to upgrade the contract', async () => {
+        const MarketplaceV2 = await ethers.getContractFactory('MarketplaceV2');
+
+        marketplacev2 = await upgrades.upgradeProxy(
+            marketplace.address,
+            MarketplaceV2
+        );
+    });
+
+    it('should be able to create a ERC721 sell offer on the upgraded contract', async () => {
+        await marketplacev2
+            .connect(sorareOwner)
+            .createSellOffer(
+                '0x629a673a8242c2ac4b7b8c5d8735fbeac21a6205',
+                '43590561438427963334477478989675020505610072700158213845949414621992291854760',
+                1,
+                2,
+                200e8,
+                false
+            );
+
+        await sorareContract
+            .connect(sorareOwner)
+            .approve(
+                marketplace.address,
+                '43590561438427963334477478989675020505610072700158213845949414621992291854760'
+            );
+
+        const sellerAddress = await marketplace.checkSeller(
+            '43590561438427963334477478989675020505610072700158213845949414621992291854760'
+        );
+        console.log('Seller address: ', sellerAddress);
+        expect(sellerAddress).to.be.equal(sorareOwner._address);
+    });
+
+    it('should approve the upgraded contract to expend ERC721 tokens', async () => {
+        const approvedAddress = await sorareContract.getApproved(
+            '43590561438427963334477478989675020505610072700158213845949414621992291854760'
+        );
+
+        console.log('The approved address is: ', approvedAddress);
+        expect(approvedAddress).to.be.equal(marketplacev2.address);
+    });
+
+    it('should let the user accept and buy an ERC721 token', async () => {
+        const initialSellerEthBalance = await ethers.provider.getBalance(
+            sorareOwner._address
+        );
+        const initialBuyerEthBalance = await ethers.provider.getBalance(
+            owner.address
+        );
+
+        await marketplacev2.buyOffer(
+            '43590561438427963334477478989675020505610072700158213845949414621992291854760',
+            0,
+            false,
+            {
+                value: ethers.utils.parseEther('10')
+            }
+        );
+
+        const finalTokenOwner = await sorareContract.ownerOf(
+            '43590561438427963334477478989675020505610072700158213845949414621992291854760'
+        );
+        const finalSellerEthBalance = await ethers.provider.getBalance(
+            sorareOwner._address
+        );
+        const finalBuyerEthBalance = await ethers.provider.getBalance(
+            owner.address
+        );
+
+        console.log(`Initial seller ETH balance: ${initialSellerEthBalance}`);
+        console.log(`Final seller ETH balance ${finalSellerEthBalance}`);
+        console.log(`Final token owner ${finalTokenOwner}`);
+
+        expect(finalTokenOwner).to.be.equal(owner.address);
+        expect(finalSellerEthBalance.gt(initialSellerEthBalance)).to.be.true;
+        expect(
+            finalBuyerEthBalance.gt(
+                initialBuyerEthBalance.sub(ethers.utils.parseEther('10'))
+            )
+        ).to.be.true;
     });
 });
