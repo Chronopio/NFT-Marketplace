@@ -1,3 +1,3 @@
 # NFT-Marketplace
 
-NFT-Marketplace for EYSS Course
+NFT-Marketplace
